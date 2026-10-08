@@ -1,0 +1,7 @@
+# Данные и веса не кладём в git (большие), в README даём ссылку на датасет
+data/
+models/*.pt
+*.zip
+.venv/
+__pycache__/
+.ipynb_checkpoints/
