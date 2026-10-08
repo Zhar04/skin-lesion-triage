@@ -17,6 +17,7 @@
   python src/prepare_images.py --raw "../zr7vgbcyr2-1" --limit 20
 """
 import argparse
+import hashlib
 import io
 import shutil
 import zipfile
@@ -29,13 +30,14 @@ from PIL import Image, ImageOps
 
 def resize_and_save(args):
     name, data, out_dir, size = args
+    md5 = hashlib.md5(data).hexdigest()  # "отпечаток" файла: одинаковые картинки -> одинаковый md5
     img = Image.open(io.BytesIO(data))
     img = ImageOps.exif_transpose(img).convert("RGB")
     # ImageOps.fit = масштабирование + центральная обрезка до квадрата
     img = ImageOps.fit(img, (size, size), method=Image.Resampling.LANCZOS)
     out_path = Path(out_dir) / (Path(name).stem + ".jpg")
     img.save(out_path, "JPEG", quality=95)
-    return Path(name).name
+    return Path(name).name, md5
 
 
 def iter_zip_images(zip_paths, limit=None):
@@ -70,18 +72,24 @@ def main():
         raise SystemExit(f"Не найдены архивы imgs_part_*.zip в {raw / 'images'}")
     print("Архивы:", [z.name for z in zip_paths])
 
-    done = []
+    hashes = {}
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         jobs = ((n, d, str(img_dir), args.size) for n, d in iter_zip_images(zip_paths, args.limit))
-        for i, name in enumerate(ex.map(resize_and_save, jobs), 1):
-            done.append(name)
+        for i, (name, md5) in enumerate(ex.map(resize_and_save, jobs), 1):
+            if name in hashes:
+                print(f"ВНИМАНИЕ: файл {name} встречается в нескольких архивах (перезаписан)")
+            hashes[name] = md5
             if i % 100 == 0:
                 print(f"  обработано {i}")
-    print(f"Готово: {len(done)} изображений -> {img_dir}")
+    print(f"Готово: {len(hashes)} изображений -> {img_dir}")
 
     # Сверка с метаданными: у каждой строки должна быть картинка
     meta = pd.read_csv(raw / "metadata.csv")
+    dup_ids = meta["img_id"].duplicated().sum()
+    if dup_ids:
+        print(f"ВНИМАНИЕ: в metadata.csv {dup_ids} повторяющихся img_id")
     meta["img_file"] = meta["img_id"].str.replace(".png", ".jpg", regex=False)
+    meta["md5"] = meta["img_id"].map(hashes)  # дубликаты картинок разбираем в make_splits.py
     have = {f.name for f in img_dir.glob("*.jpg")}
     missing = meta.loc[~meta["img_file"].isin(have), "img_id"]
     if args.limit is None and len(missing):

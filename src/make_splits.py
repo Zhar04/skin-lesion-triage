@@ -24,6 +24,29 @@ MALIGNANT = {"BCC", "SCC", "MEL"}
 SEED = 42
 
 
+def remove_duplicates(meta, data):
+    """
+    Побайтно одинаковые картинки под разными img_id (найдено 15 пар, все внутри одного пациента).
+    Часто у копий РАЗНЫЕ диагнозы и регионы тела -> ошибка разметки, верную метку не узнать.
+      - метки конфликтуют -> удаляем все копии (шумная метка хуже, чем её отсутствие);
+      - метки совпадают   -> оставляем одну копию (иначе фото считается дважды).
+    Удалённые строки сохраняем в removed_duplicates.csv (для отчёта и EDA).
+    """
+    if "md5" not in meta or meta["md5"].isna().all():
+        print("Нет колонки md5 — запустите prepare_images.py без --limit")
+        return meta
+    dup = meta[meta["md5"].duplicated(keep=False) & meta["md5"].notna()]
+    conflict = dup.groupby("md5")["diagnostic"].transform("nunique") > 1
+    drop_conflict = dup[conflict].index
+    drop_extra = dup[~conflict & dup["md5"].duplicated(keep="first")].index
+    removed = meta.loc[drop_conflict.union(drop_extra)].copy()
+    removed["reason"] = ["conflicting_labels" if i in drop_conflict else "exact_copy" for i in removed.index]
+    removed.to_csv(data / "removed_duplicates.csv", index=False)
+    print(f"Дубликаты картинок: групп {dup['md5'].nunique()}, "
+          f"удалено с конфликтом меток {len(drop_conflict)}, лишних копий {len(drop_extra)}")
+    return meta.drop(removed.index).reset_index(drop=True)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="data/processed")
@@ -31,6 +54,7 @@ def main():
     data = Path(args.data)
 
     meta = pd.read_csv(data / "metadata.csv")
+    meta = remove_duplicates(meta, data)
     meta["label"] = meta["diagnostic"].isin(MALIGNANT).astype(int)  # 1 = злокачественное
 
     # 20 стратифицированных групповых фолдов по 5%: 3 фолда -> test, 3 -> val, 14 -> train
